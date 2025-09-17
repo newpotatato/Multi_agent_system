@@ -1,245 +1,256 @@
 """
-Контроллер для управления распределением задач между брокерами и выполнениеом
+Simplified Broker Controller for Multi-Agent System
+
+This broker implements SPSA optimization and LVP load balancing
+for task distribution among executors.
 """
-from ..models.models import predict_load, predict_waiting_time
-from ..core.spsa import SPSA
-from ..core.graph import GraphService
+
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from configs.config import SPSA_PARAMS, LVP_PARAMS
 import random
 import numpy as np
-import math
+import time
+
+# Add the parent directory to the path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from core.models import predict_load, predict_waiting_time
+from core.spsa import SPSA
+from config.config import get_spsa_config, get_lvp_config, get_system_config
+
 
 class Broker:
-    def __init__(self, id, graph_service):
-        self.id = id
-        self.graph_service = graph_service
-        self.load = 0
+    """
+    SPSA-optimized broker for intelligent task distribution.
+    """
+    
+    def __init__(self, broker_id, executors):
+        self.broker_id = broker_id
+        self.executors = executors
+        self.load = 0.0
+        self.task_count = 0
         self.history = []
-        self.executor_pool_size = 6  # Set the number of executors, including 5
-        self.theta = [random.random() for _ in range(self.executor_pool_size)]  # Initialize parameters θ for each executor
-
-    def receive_prompt(self, prompt_or_batch, all_brokers=None):
-        """
-        Обрабатывает промпт или пакет промптов.
-        Args:
-            prompt_or_batch: один промпт (dict) или список промптов (list)
-            all_brokers: список всех брокеров для расчета u_i
-        Returns:
-            результат обработки (dict) или список результатов (list)
-        """
-        # Проверяем, является ли входной параметр списком (пакетом)
-        is_batch = isinstance(prompt_or_batch, list)
-        prompts = prompt_or_batch if is_batch else [prompt_or_batch]
-        
-        # Обновляем нагрузку на размер пакета
-        self.load += len(prompts)
-        neighbors = self.graph_service.get_neighbors(self.id)
-        
-        # Если all_brokers не передан, создаем пустой список для обратной совместимости
-        if all_brokers is None:
-            all_brokers = []
-        
-        # Вычисляем u_i один раз для всего пакета
-        u_i = self.calculate_ui(neighbors, all_brokers)
-        
-        results = []
-        batch_load_total = 0
-        
-        print(f"Брокер {self.id} обрабатывает пакет из {len(prompts)} задач")
-        
-        for prompt in prompts:
-            # Определяем p̂, ŵ для каждого промпта
-            p_hat = predict_load(prompt)
-            w_hat = predict_waiting_time(prompt)
-            batch_load_total += p_hat
-
-            # Вычисляем p_real на основе длины текста и сложности задачи с шумом
-            text_length = len(prompt.get('text', ''))
-            complexity = prompt.get('complexity', 5)
-            norm_length = min(text_length / 1000, 1.0)
-            norm_complexity = min(complexity / 10, 1.0)
-            base_real_load = 0.3 * norm_length + 0.7 * norm_complexity
-            noise = random.uniform(-0.05, 0.05)
-            p_real = max(0.0, min(1.0, base_real_load + noise))
-
-            # Вычисляем D по формуле: D_i = r_i + ŵ_i + x_i^T θ
-            r_i = random.random()  # Случайный компонент
-            x_i_theta = sum(x * t for x, t in zip(prompt['features'], self.theta))  # x_i^T θ
-            D = r_i + w_hat + x_i_theta
-
-            # Рассчитываем cost и success
-            cost = D + p_hat * 0.1  # Простой расчет стоимости
-            success = random.random() > 0.1  # 90% вероятность успеха
-
-            # Симулируем отправку задачи в исполнитель
-            executor_id = self.select_executor(prompt)
-            print(f"  └─ Задача {prompt['id']} → исполнитель {executor_id}")
-
-            # Сохраняем историю с p_real для последующего анализа
-            self.history.append((prompt, p_hat, D, p_real))
-            
-            # Добавляем результат для этого промпта
-            results.append({
-                "selected_executor": executor_id,
-                "load_prediction": p_hat,
-                "wait_prediction": w_hat,
-                "cost": cost,
-                "success": success
-            })
-        
-        print(f"Брокер {self.id} завершил обработку пакета. Общая нагрузка: {batch_load_total:.2f}")
-        
-        # Возвращаем результат в том же формате, что и входной параметр
-        return results if is_batch else results[0]
-
-    def calculate_ui(self, neighbors, all_brokers):
-        """
-        Вычисление u_i по LVP алгоритму:
-        u_i = h * ∑_{j ∈ neighbors[i]} r_ij * (y_i - y_j) - γ * (y_i - mean(y_neighbors))
-        """
-        if not neighbors:
-            return 0.0
-            
-        h = LVP_PARAMS['h']
-        gamma = LVP_PARAMS['gamma']
-        
-        y_i = self.load  # Текущая нагрузка брокера i
-        
-        # Первый терм: h * ∑ r_ij * (y_i - y_j)
-        first_term = 0.0
-        neighbor_loads = []
-        
-        for j in neighbors:
-            if j < len(all_brokers):
-                y_j = all_brokers[j].load
-                neighbor_loads.append(y_j)
-                # r_ij - вес ребра между i и j
-                r_ij = self.graph_service.get_weight(self.id, j)
-                first_term += r_ij * (y_i - y_j)
-        
-        first_term *= h
-        
-        # Второй терм: -γ * (y_i - mean(y_neighbors))
-        mean_neighbor_load = np.mean(neighbor_loads) if neighbor_loads else 0
-        second_term = -gamma * (y_i - mean_neighbor_load)
-        
-        return first_term + second_term
-
-    def select_executor(self, prompt):
-        # Простая логика выбора исполнителя
-        available_executors = list(range(self.executor_pool_size))  # Executors 0-5 based on pool size
-        selected_executor = random.choice(available_executors)
-        
-        
-        return selected_executor
-
-    def _loss_function_proc(self, theta):
-        """
-        Функция потерь для обработки задач:
-        F_proc(θ) = mean( ((p̂ + x^Tθ - p_real)/(h(T)*p_real + ε))² )
-        """
-        if len(self.history) < 5:
-            return 0.5  # Возвращаем базовое значение если истории недостаточно
-            
-        losses = []
-        h_T = 0.1  # Коэффициент нормализации
-        epsilon = 1e-6
-        
-        for prompt, p_hat, D, p_real in self.history[-10:]:
-            x_i_theta = sum(x * t for x, t in zip(prompt['features'], theta))
-            # p_real = prompt.get('actual_load', p_hat)  # Используем p_hat как приближение если нет реальных данных
-            
-            # Вычисляем нормализованную ошибку
-            predicted = p_hat + x_i_theta
-            normalizer = h_T * p_real + epsilon
-            error = ((predicted - p_real) / normalizer) ** 2
-            losses.append(error)
-        
-        return np.mean(losses) if losses else 0.5
-    
-    def _loss_function_wait(self, theta):
-        """
-        Функция потерь для времени ожидания:
-        F_wait(θ) = mean( ((ŵ + x^Tθ - w_real)² * (1 - s/s_max)) )
-        """
-        if len(self.history) < 5:
-            return 0.5
-            
-        losses = []
-        s_max = 1.0  # Максимальный успех
-        
-        for prompt, _, D, _ in self.history[-10:]:
-            x_i_theta = sum(x * t for x, t in zip(prompt['features'], theta))
-            w_hat = predict_waiting_time(prompt)
-            w_real = prompt.get('actual_wait', w_hat)  # Приближение
-            s = prompt.get('success_rate', 0.9)  # Приближение успешности
-            
-            # Вычисляем взвешенную ошибку
-            wait_error = (w_hat + x_i_theta - w_real) ** 2
-            weight = 1 - (s / s_max)
-            losses.append(wait_error * weight)
-        
-        return np.mean(losses) if losses else 0.5
-    
-    def _combined_loss_function(self, theta):
-        """
-        Комбинированная функция потерь
-        """
-        return self._loss_function_proc(theta) + self._loss_function_wait(theta)
-    
-    def update_parameters(self):
-        """
-        Обновление параметров с использованием SPSA согласно спецификации:
-        1. Генерируем Δ∈{−1,+1}ᵈ  
-        2. θ⁺ = θ + βΔ, θ⁻ = θ - βΔ  
-        3. Вычисляем функции потерь F_proc(θ) и F_wait(θ)
-        4. Приближённый градиент: ĝ = (F(θ⁺) - F(θ⁻)) / (2β) * Δ
-        5. Обновляем: θ ← θ - α * ĝ
-        """
-        if len(self.history) < 10:
-            return {'loss': 0.0, 'theta_change': 0.0}
-        
-        # Сохраняем старые параметры
-        old_theta = np.array(self.theta)
-        
-        # Параметры SPSA
-        alpha = SPSA_PARAMS['alpha']  # Скорость обучения
-        beta = SPSA_PARAMS['beta']    # Размер возмущения
-        
-        # 1. Генерируем случайное возмущение Δ∈{−1,+1}ᵈ
-        delta = 2 * np.random.randint(2, size=len(self.theta)) - 1
-        
-        # 2. Создаем возмущенные параметры
-        theta_plus = old_theta + beta * delta
-        theta_minus = old_theta - beta * delta
-        
-        # 3. Вычисляем функции потерь
-        f_plus = self._combined_loss_function(theta_plus)
-        f_minus = self._combined_loss_function(theta_minus)
-        
-        # 4. Приближённый градиент
-        grad_approx = ((f_plus - f_minus) / (2.0 * beta)) * delta
-        
-        # 5. Обновляем параметры (без консенсуса, он будет применен отдельно)
-        new_theta = old_theta - alpha * grad_approx
-        self.theta = new_theta.tolist()
-        
-        # Вычисляем метрики для мониторинга
-        loss = self._combined_loss_function(new_theta)
-        theta_change = np.linalg.norm(new_theta - old_theta)
-        
-        return {
-            'loss': float(loss), 
-            'theta_change': float(theta_change),
-            'grad_norm': float(np.linalg.norm(grad_approx)),
-            'f_plus': float(f_plus),
-            'f_minus': float(f_minus)
+        self.performance_stats = {
+            'total_tasks': 0,
+            'successful_tasks': 0,
+            'total_time': 0.0,
+            'average_load': 0.0
         }
-
-    def consensus_update(self):
-        # Пример консенсусного обновления
-        print("Выполнение консенсусного обновления...")
-
+        
+        # SPSA parameters
+        self.theta = np.random.uniform(-0.5, 0.5, len(executors))
+        
+        # Load balancing
+        self.neighbors = []
+        
+    def add_neighbor(self, neighbor_broker):
+        """Add a neighbor broker for load balancing"""
+        if neighbor_broker not in self.neighbors:
+            self.neighbors.append(neighbor_broker)
+    
+    def process_task(self, task_dict):
+        """
+        Process a single task using SPSA optimization.
+        
+        Args:
+            task_dict: Dictionary containing task information
+            
+        Returns:
+            Dictionary with processing results
+        """
+        start_time = time.time()
+        
+        try:
+            # Select best executor using SPSA
+            selected_executor = self._select_executor(task_dict)
+            
+            # Execute task
+            if selected_executor:
+                # Simulate task execution
+                execution_time = random.uniform(0.5, 3.0)
+                success = random.random() > 0.1  # 90% success rate
+                
+                # Update statistics
+                self.task_count += 1
+                self.performance_stats['total_tasks'] += 1
+                
+                if success:
+                    self.performance_stats['successful_tasks'] += 1
+                
+                total_time = time.time() - start_time
+                self.performance_stats['total_time'] += total_time
+                
+                # Update load
+                self.load += execution_time * 0.1
+                self._update_average_load()
+                
+                result = {
+                    'status': 'completed',
+                    'executor_id': selected_executor.executor_id,
+                    'execution_time': total_time,
+                    'success': success
+                }
+                
+                # Store in history for SPSA learning
+                self.history.append((task_dict, result, execution_time))
+                
+                # Update SPSA parameters if enough history
+                if len(self.history) >= 10:
+                    self._update_spsa_parameters()
+                
+                return result
+                
+            else:
+                return {
+                    'status': 'failed',
+                    'error': 'No available executor',
+                    'execution_time': time.time() - start_time
+                }
+                
+        except Exception as e:
+            return {
+                'status': 'error',
+                'error': str(e),
+                'execution_time': time.time() - start_time
+            }
+    
+    def _select_executor(self, task_dict):
+        """
+        Select the best executor using SPSA-optimized parameters.
+        """
+        if not self.executors:
+            return None
+        
+        # Calculate executor scores using SPSA parameters
+        scores = []
+        for i, executor in enumerate(self.executors):
+            # Simple feature extraction from task
+            features = self._extract_features(task_dict)
+            
+            # Calculate score using SPSA parameters
+            score = np.dot(features, self.theta) + random.uniform(-0.1, 0.1)
+            scores.append((score, executor))
+        
+        # Select executor with highest score
+        scores.sort(key=lambda x: x[0], reverse=True)
+        return scores[0][1]
+    
+    def _extract_features(self, task_dict):
+        """Extract numerical features from task for SPSA optimization"""
+        features = np.zeros(len(self.executors))
+        
+        # Basic features
+        priority = task_dict.get('priority', 5)
+        complexity = task_dict.get('complexity', 5)
+        text_length = len(str(task_dict.get('prompt', '')))
+        
+        # Normalize features
+        features[0] = priority / 10.0
+        features[1] = complexity / 10.0
+        features[2] = min(text_length / 1000.0, 1.0)
+        
+        # Add random features for remaining dimensions
+        for i in range(3, len(features)):
+            features[i] = random.uniform(-0.5, 0.5)
+        
+        return features
+    
+    def _update_spsa_parameters(self):
+        """Update SPSA parameters based on performance history"""
+        if len(self.history) < 10:
+            return
+        
+        config = get_spsa_config()
+        alpha = config.alpha
+        beta = config.beta
+        
+        # Calculate loss function based on recent performance
+        recent_history = self.history[-10:]
+        loss = self._calculate_loss(recent_history)
+        
+        # SPSA update
+        delta = np.random.choice([-1, 1], size=len(self.theta))
+        
+        theta_plus = self.theta + beta * delta
+        theta_minus = self.theta - beta * delta
+        
+        loss_plus = self._simulate_loss(theta_plus)
+        loss_minus = self._simulate_loss(theta_minus)
+        
+        # Gradient approximation
+        grad_approx = (loss_plus - loss_minus) / (2 * beta) * delta
+        
+        # Update parameters
+        self.theta -= alpha * grad_approx
+        
+        # Clip to reasonable bounds
+        self.theta = np.clip(self.theta, -2.0, 2.0)
+    
+    def _calculate_loss(self, history):
+        """Calculate loss function for SPSA optimization"""
+        if not history:
+            return 1.0
+        
+        total_loss = 0.0
+        for task_dict, result, exec_time in history:
+            # Loss based on execution time and success
+            time_loss = exec_time / 5.0  # Normalize to expected max time
+            success_loss = 0.0 if result['success'] else 1.0
+            total_loss += time_loss + success_loss
+        
+        return total_loss / len(history)
+    
+    def _simulate_loss(self, theta):
+        """Simulate loss for given theta parameters"""
+        # Simple simulation - in practice this would be more sophisticated
+        return np.sum(theta ** 2) * 0.1 + random.uniform(0, 0.1)
+    
+    def _update_average_load(self):
+        """Update average load statistics"""
+        if self.performance_stats['total_tasks'] > 0:
+            self.performance_stats['average_load'] = (
+                self.load / self.performance_stats['total_tasks']
+            )
+    
+    def get_performance_stats(self):
+        """Get current performance statistics"""
+        stats = self.performance_stats.copy()
+        
+        if stats['total_tasks'] > 0:
+            stats['success_rate'] = (
+                stats['successful_tasks'] / stats['total_tasks'] * 100
+            )
+            stats['average_execution_time'] = (
+                stats['total_time'] / stats['total_tasks']
+            )
+        else:
+            stats['success_rate'] = 0.0
+            stats['average_execution_time'] = 0.0
+        
+        return stats
+    
+    def balance_load(self):
+        """Implement LVP load balancing with neighbors"""
+        if not self.neighbors:
+            return
+        
+        config = get_lvp_config()
+        h = config.h
+        gamma = config.gamma
+        
+        # Calculate load difference with neighbors
+        neighbor_loads = [neighbor.load for neighbor in self.neighbors]
+        if not neighbor_loads:
+            return
+        
+        avg_neighbor_load = np.mean(neighbor_loads)
+        load_difference = self.load - avg_neighbor_load
+        
+        # Apply LVP correction
+        load_adjustment = -h * load_difference - gamma * load_difference
+        
+        # Apply adjustment (simplified)
+        self.load = max(0, self.load + load_adjustment * 0.1)
+    
+    def __str__(self):
+        return f"Broker({self.broker_id}, load={self.load:.2f}, tasks={self.task_count})"

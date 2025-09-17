@@ -228,23 +228,32 @@ def run_comparison_demo():
     print(f"\nPerformance Analysis:")
     print("-" * 40)
     
-    time_improvement = ((rr_results['total_time'] - spsa_results['total_time']) / rr_results['total_time']) * 100
-    success_improvement = spsa_results['success_rate'] - rr_results['success_rate']
-    
-    if time_improvement > 0:
-        print(f"SPSA was {time_improvement:.1f}% faster than Round-Robin")
+    if rr_results['total_time'] > 0:
+        time_improvement = ((rr_results['total_time'] - spsa_results['total_time']) / rr_results['total_time']) * 100
+        if time_improvement > 0:
+            print(f"SPSA was {time_improvement:.1f}% faster than Round-Robin")
+        else:
+            print(f"Round-Robin was {abs(time_improvement):.1f}% faster than SPSA")
     else:
-        print(f"Round-Robin was {abs(time_improvement):.1f}% faster than SPSA")
+        print("Both algorithms completed in negligible time")
+    
+    success_improvement = spsa_results['success_rate'] - rr_results['success_rate']
     
     print(f"SPSA had {success_improvement:.1f}% points higher success rate")
     
     # Load balancing analysis
     if spsa_results['load_balance'] < rr_results['load_balance']:
-        balance_improvement = ((rr_results['load_balance'] - spsa_results['load_balance']) / rr_results['load_balance']) * 100
-        print(f"SPSA achieved {balance_improvement:.1f}% better load balancing")
+        if rr_results['load_balance'] > 0:
+            balance_improvement = ((rr_results['load_balance'] - spsa_results['load_balance']) / rr_results['load_balance']) * 100
+            print(f"SPSA achieved {balance_improvement:.1f}% better load balancing")
+        else:
+            print("Both algorithms achieved perfect load balancing")
     else:
-        balance_improvement = ((spsa_results['load_balance'] - rr_results['load_balance']) / spsa_results['load_balance']) * 100
-        print(f"Round-Robin achieved {balance_improvement:.1f}% better load balancing")
+        if spsa_results['load_balance'] > 0:
+            balance_improvement = ((spsa_results['load_balance'] - rr_results['load_balance']) / spsa_results['load_balance']) * 100
+            print(f"Round-Robin achieved {balance_improvement:.1f}% better load balancing")
+        else:
+            print("Both algorithms achieved perfect load balancing")
     
     print("\nComparison completed successfully!")
 

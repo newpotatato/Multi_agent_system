@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core.task import Task
 from agents.real_llm_executor import RealLLMExecutor
 from providers.provider_manager import create_default_provider_manager
-from config.api_config import get_api_config
+from config.config import get_api_config
 
 
 async def create_test_tasks():

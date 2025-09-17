@@ -49,13 +49,12 @@ def setup_system():
     ]
     
     # Create graph service for broker coordination
-    graph_service = GraphService(brokers)
+    graph_service = GraphService(len(brokers))
     
     # Initialize SPSA optimizer
     spsa = SPSA(
-        alpha=0.01,    # learning rate
-        beta=0.1,      # perturbation size
-        gamma=0.02     # consensus coefficient
+        learning_rate=0.01,          # learning rate
+        perturbation_coefficient=0.1  # perturbation size
     )
     
     return brokers, executors, graph_service, spsa

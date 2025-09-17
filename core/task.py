@@ -407,5 +407,20 @@ class Task:
     
     def __str__(self) -> str:
         return f"Задача: {self.prompt}\nТип: {self.type}\nПриоритет: {self.priority}\nСложность: {self.complexity}"
+    
+    def to_dict(self) -> dict:
+        """
+        Convert task to dictionary format.
+        
+        :return: Dictionary representation of the task
+        """
+        return {
+            'id': getattr(self, 'id', f'task_{hash(self.prompt) % 10000}'),
+            'prompt': self.prompt,
+            'priority': self.priority,
+            'complexity': self.complexity,
+            'type': self.type,
+            'confidence': self.get_confidence_score()
+        }
 
     
