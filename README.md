@@ -254,28 +254,3 @@ Typical performance on standard hardware:
 
 MIT License - see LICENSE file for details.
 
-## Citation
-
-If you use this system in academic research, please cite:
-
-```bibtex
-@software{multi_agent_system,
-  title={Multi-Agent System with SPSA and LVP Algorithms},
-  author={Multi-Agent System Development Team},
-  year={2025},
-  url={https://github.com/your-username/Multi_agent_system}
-}
-```
-
-## Version History
-
-- **v1.0.0**: Initial release with SPSA optimization and LVP load balancing
-- **v1.1.0**: Added real LLM provider support and enhanced visualization
-- **v2.0.0**: Restructured architecture with simplified configuration system
-
-## Support
-
-For questions, issues, or contributions:
-- Create an issue on GitHub
-- Check the documentation in `docs/`
-- Review example implementations in `examples/`
